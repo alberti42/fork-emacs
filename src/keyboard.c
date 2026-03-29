@@ -12596,6 +12596,10 @@ read_stdin (void)
    enough times, then quit anyway.  See bug#6585.  */
 static int volatile force_quit_count;
 
+/* Number of consecutive C-g presses needed to trigger the TTY emergency
+   escape.  Counts independently of force_quit_count.  */
+static int volatile tty_emergency_escape_count;
+
 /* This routine is called at interrupt level in response to C-g.
 
    It is called from the SIGINT handler or kbd_buffer_store_event.
@@ -12615,8 +12619,10 @@ handle_interrupt (bool in_signal_handler)
   cancel_echoing ();
 
   /* XXX This code needs to be revised for multi-tty support.  */
-  if (!NILP (Vquit_flag) && get_named_terminal (dev_tty))
+  if (!NILP (Vquit_flag) && get_named_terminal (dev_tty)
+      && ++tty_emergency_escape_count >= 10)
     {
+      tty_emergency_escape_count = 0;
       if (! in_signal_handler)
 	{
 	  /* If SIGINT isn't blocked, don't let us be interrupted by
@@ -12689,7 +12695,7 @@ handle_interrupt (bool in_signal_handler)
 	}
 
 #ifdef MSDOS
-      write_stdout ("\r\nAbort?  (y or n) ");
+      write_stdout ("\r\nKill Emacs?  (y or n) ");
 #else
       write_stdout ("Abort (and dump core)? (y or n) ");
 #endif
