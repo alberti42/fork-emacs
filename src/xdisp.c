@@ -12171,6 +12171,71 @@ WINDOW.  */)
 }
 
 
+/* Return true if WINDOW's current glyph matrix has any enabled, non
+   mode-line row with the requested truncation bit set.  If CHECK_LEFT,
+   look for `truncated_on_left_p'; if CHECK_RIGHT, look for
+   `truncated_on_right_p'.  Mode-line, header-line and tab-line rows
+   are skipped: `display_string' also sets these bits on those rows
+   when a long mode-line string is truncated, but that is not the
+   buffer content we want to report on.  */
+
+static bool
+window_has_truncation (Lisp_Object window, bool check_left, bool check_right)
+{
+  struct window *w = decode_live_window (window);
+  struct glyph_matrix *m = w->current_matrix;
+
+  if (m == NULL)
+    return false;
+
+  for (int i = 0; i < m->nrows; ++i)
+    {
+      struct glyph_row *row = MATRIX_ROW (m, i);
+      if (!row->enabled_p || row->mode_line_p)
+	continue;
+      if ((check_left && row->truncated_on_left_p)
+	  || (check_right && row->truncated_on_right_p))
+	return true;
+    }
+  return false;
+}
+
+DEFUN ("window-truncated-on-left-p", Fwindow_truncated_on_left_p,
+       Swindow_truncated_on_left_p, 0, 1, 0,
+       doc: /* Return non-nil if any line in WINDOW is truncated on the left.
+This reflects the result of the most recent redisplay of WINDOW: it
+returns non-nil when WINDOW is horizontally scrolled and at least one
+visible buffer line is consequently truncated at the left edge (i.e.,
+its leftmost character is past column 0).
+
+WINDOW must be a live window and defaults to the selected window.
+Mode-line, header-line and tab-line rows are not considered.
+
+If WINDOW has not yet been displayed, return nil.  */)
+  (Lisp_Object window)
+{
+  return window_has_truncation (window, true, false) ? Qt : Qnil;
+}
+
+DEFUN ("window-truncated-on-right-p", Fwindow_truncated_on_right_p,
+       Swindow_truncated_on_right_p, 0, 1, 0,
+       doc: /* Return non-nil if any line in WINDOW is truncated on the right.
+This reflects the result of the most recent redisplay of WINDOW: it
+returns non-nil when at least one visible buffer line is truncated at
+the right edge because it is too long for WINDOW's width (typically
+because `truncate-lines' is non-nil, or WINDOW is a partial-width
+window covered by `truncate-partial-width-windows').
+
+WINDOW must be a live window and defaults to the selected window.
+Mode-line, header-line and tab-line rows are not considered.
+
+If WINDOW has not yet been displayed, return nil.  */)
+  (Lisp_Object window)
+{
+  return window_has_truncation (window, false, true) ? Qt : Qnil;
+}
+
+
 DEFUN ("display--line-is-continued-p", Fdisplay__line_is_continued_p,
        Sdisplay__line_is_continued_p, 0, 0, 0,
        doc: /* Return non-nil if the current screen line is continued on display.  */)
@@ -38237,6 +38302,8 @@ be let-bound around code that needs to disable messages temporarily. */);
   defsubr (&Smove_point_visually);
   defsubr (&Sbidi_find_overridden_directionality);
   defsubr (&Sdisplay__line_is_continued_p);
+  defsubr (&Swindow_truncated_on_left_p);
+  defsubr (&Swindow_truncated_on_right_p);
   defsubr (&Sget_display_property);
   defsubr (&Slong_line_optimizations_p);
 
