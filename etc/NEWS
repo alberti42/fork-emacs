@@ -4431,6 +4431,18 @@ If supplied, 'string-pixel-width' will use any face remappings from
 BUFFER when computing the string's width.
 
 +++
+** New functions 'window-truncated-on-left-p' and 'window-truncated-on-right-p'.
+These functions report whether the most recent redisplay of WINDOW
+(the selected window by default) showed a truncation indicator on the
+left or the right edge, respectively.  Left-edge truncation occurs
+when the window is horizontally scrolled; right-edge truncation occurs
+when 'truncate-lines' is non-nil (or 'truncate-partial-width-windows'
+applies) and a line is too long for the window.  Together they let
+Lisp code cheaply gate features such as horizontal scrolling on
+whether truncation actually occurred, and stop at the natural extents
+on each side.
+
++++
 ** New function 'truncate-string-pixelwise'.
 This function truncates a string to the specified maximum number of
 pixels rather than by characters, as in 'truncate-string-to-width', and

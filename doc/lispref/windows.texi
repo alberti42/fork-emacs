@@ -6753,6 +6753,53 @@ is off the screen due to horizontal scrolling:
 @end group
 @end example
 
+@defun window-truncated-on-left-p &optional window
+This function returns non-@code{nil} if the most recent redisplay of
+@var{window} showed a truncation indicator at its left edge---i.e.,
+@var{window} is horizontally scrolled and at least one visible buffer
+line consequently has its leftmost character past column 0.  Otherwise
+it returns @code{nil}.  The default for @var{window} is the selected
+window, which must be a live window.  Mode-line, header-line and
+tab-line rows are not considered.
+
+The result reflects the state of the last redisplay of @var{window};
+it returns @code{nil} for a window that has not yet been displayed.
+@end defun
+
+@defun window-truncated-on-right-p &optional window
+Like @code{window-truncated-on-left-p}, but reports right-edge
+truncation---i.e., at least one visible buffer line is too long for
+@var{window}'s width and is consequently cut off on the right (because
+@code{truncate-lines} is non-@code{nil}, or
+@code{truncate-partial-width-windows} applies).
+@end defun
+
+  Together these primitives let Lisp code cheaply gate features whose
+only purpose is to deal with truncated lines, and stop at the natural
+extents on each side.  For example, to make horizontal scrolling
+inactive when nothing is truncated on the relevant edge:
+
+@example
+@group
+(defun my-scroll-left-if-needed (arg)
+  (interactive "P")
+  (when (window-truncated-on-right-p)
+    (scroll-left arg)))
+
+(defun my-scroll-right-if-needed (arg)
+  (interactive "P")
+  (when (window-truncated-on-left-p)
+    (scroll-right arg)))
+@end group
+@end example
+
+@noindent
+Using @code{window-truncated-on-left-p} for the second case is
+preferable to testing @code{(> (window-hscroll) 0)} because the
+primitive reports the rendered state and therefore handles
+right-to-left paragraph direction correctly (@pxref{Bidirectional
+Display}).
+
 
 @node Coordinates and Windows
 @section Coordinates and Windows
