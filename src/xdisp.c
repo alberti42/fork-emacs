@@ -25825,6 +25825,9 @@ display_line (struct it *it, int cursor_vpos)
   ptrdiff_t wrap_row_min_pos UNINIT, wrap_row_min_bpos UNINIT;
   ptrdiff_t wrap_row_max_pos UNINIT, wrap_row_max_bpos UNINIT;
   int wrap_face_id UNINIT, prev_face_id;
+  int wrap_row_left_fringe UNINIT, wrap_row_left_fringe_face UNINIT;
+  int wrap_row_right_fringe UNINIT, wrap_row_right_fringe_face UNINIT;
+  bool did_back_to_wrap = false;
   int cvpos;
   ptrdiff_t min_pos = ZV + 1, max_pos = 0;
   ptrdiff_t min_bpos UNINIT, max_bpos UNINIT;
@@ -26002,6 +26005,16 @@ display_line (struct it *it, int cursor_vpos)
       int x, nglyphs;
       int ascent = 0, descent = 0, phys_ascent = 0, phys_descent = 0;
 
+      /* Save fringe state before get_next_display_element, which may
+	 set fringe bitmaps from an overlay's before-string.  We need
+	 this to distinguish fringe set before vs. at a word-wrap
+	 point, so the fringe follows the wrapped word to the next
+	 visual line.  */
+      int pre_gnde_left_fringe = it->left_user_fringe_bitmap;
+      int pre_gnde_left_fringe_face = it->left_user_fringe_face_id;
+      int pre_gnde_right_fringe = it->right_user_fringe_bitmap;
+      int pre_gnde_right_fringe_face = it->right_user_fringe_face_id;
+
       /* Retrieve the next thing to display.  Value is false if end of
 	 buffer reached.  */
       if (!get_next_display_element (it))
@@ -26094,6 +26107,10 @@ display_line (struct it *it, int cursor_vpos)
 		  wrap_row_max_pos = max_pos;
 		  wrap_row_max_bpos = max_bpos;
 		  wrap_face_id = prev_face_id;
+		  wrap_row_left_fringe = pre_gnde_left_fringe;
+		  wrap_row_left_fringe_face = pre_gnde_left_fringe_face;
+		  wrap_row_right_fringe = pre_gnde_right_fringe;
+		  wrap_row_right_fringe_face = pre_gnde_right_fringe_face;
 		}
 	      /* Update may_wrap for the next iteration.  */
               may_wrap = next_may_wrap;
@@ -26361,6 +26378,7 @@ display_line (struct it *it, int cursor_vpos)
 		  else if (wrap_row_used > 0)
 		    {
 		    back_to_wrap:
+		      did_back_to_wrap = true;
 		      if (row->reversed_p)
 			unproduce_glyphs (it,
 					  row->used[TEXT_AREA] - wrap_row_used);
@@ -26789,16 +26807,39 @@ display_line (struct it *it, int cursor_vpos)
     = (it->method == GET_FROM_DISPLAY_VECTOR
        && it->ellipsis_p);
 
-  /* Save fringe bitmaps in this row.  */
-  row->left_user_fringe_bitmap = it->left_user_fringe_bitmap;
-  row->left_user_fringe_face_id = it->left_user_fringe_face_id;
-  row->right_user_fringe_bitmap = it->right_user_fringe_bitmap;
-  row->right_user_fringe_face_id = it->right_user_fringe_face_id;
-
-  it->left_user_fringe_bitmap = 0;
-  it->left_user_fringe_face_id = 0;
-  it->right_user_fringe_bitmap = 0;
-  it->right_user_fringe_face_id = 0;
+  /* Save fringe bitmaps in this row.  When back_to_wrap fired, an
+     overlay's before-string fringe set at the wrap point should follow
+     the wrapped word to the next visual line, not stay on this one.
+     Use the pre-wrap fringe state for this row; keep any fringe set
+     at the wrap point on the iterator for the next display_line.  */
+  if (did_back_to_wrap)
+    {
+      row->left_user_fringe_bitmap = wrap_row_left_fringe;
+      row->left_user_fringe_face_id = wrap_row_left_fringe_face;
+      row->right_user_fringe_bitmap = wrap_row_right_fringe;
+      row->right_user_fringe_face_id = wrap_row_right_fringe_face;
+      if (it->left_user_fringe_bitmap == wrap_row_left_fringe)
+	{
+	  it->left_user_fringe_bitmap = 0;
+	  it->left_user_fringe_face_id = 0;
+	}
+      if (it->right_user_fringe_bitmap == wrap_row_right_fringe)
+	{
+	  it->right_user_fringe_bitmap = 0;
+	  it->right_user_fringe_face_id = 0;
+	}
+    }
+  else
+    {
+      row->left_user_fringe_bitmap = it->left_user_fringe_bitmap;
+      row->left_user_fringe_face_id = it->left_user_fringe_face_id;
+      row->right_user_fringe_bitmap = it->right_user_fringe_bitmap;
+      row->right_user_fringe_face_id = it->right_user_fringe_face_id;
+      it->left_user_fringe_bitmap = 0;
+      it->left_user_fringe_face_id = 0;
+      it->right_user_fringe_bitmap = 0;
+      it->right_user_fringe_face_id = 0;
+    }
 
   /* When they turn off tooltip-mode on a GUI frame, we call 'message'
      with message-truncate-lines bound to non-nil, which produces

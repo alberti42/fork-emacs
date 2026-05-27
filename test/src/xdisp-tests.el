@@ -179,4 +179,36 @@ int main () {
         (buffer-string)))
     "foo\n")))
 
+(ert-deftest xdisp-tests--fringe-at-word-wrap ()
+  "Before-string fringe indicator should follow word across wrap boundary."
+  (skip-unless (display-graphic-p))
+  (let ((buf (generate-new-buffer " *fringe-wrap-test*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (setq-local word-wrap t)
+          (setq-local truncate-lines nil)
+          (let* ((win (selected-window))
+                 (width (window-body-width win)))
+            ;; Insert a line that wraps: fill most of the line, then a
+            ;; space, then a word that won't fit on the first visual line.
+            (insert (make-string (- width 8) ?a)
+                    " TARGETWORD end")
+            ;; Overlay with left-fringe before-string at TARGETWORD.
+            (let* ((target (+ (point-min) (- width 8) 1))
+                   (ov (make-overlay target (+ target 10))))
+              (overlay-put ov 'before-string
+                           (propertize "x" 'display
+                                       '(left-fringe right-triangle)))
+              (goto-char (point-min))
+              (redisplay t)
+              ;; TARGETWORD is word-wrapped to the next visual line.
+              ;; The fringe should appear on that line, not the first.
+              (should (eq (car (fringe-bitmaps-at-pos target))
+                          'right-triangle))
+              (should-not (eq (car (fringe-bitmaps-at-pos (point-min)))
+                              'right-triangle))
+              (delete-overlay ov))))
+      (kill-buffer buf))))
+
 ;;; xdisp-tests.el ends here
