@@ -1905,15 +1905,10 @@ if there are no other active clients."
               (memq server-stop-automatically '(kill-terminal delete-frame))))
         (proc (frame-parameter nil 'client)))
     (cond ((eq proc 'nowait)
-	   ;; Nowait frames have no client buffer list.
-	   (if (length> (frame-list) (if stop-automatically 2 1))
-               ;; If there are any other frames, only delete this one.
-               ;; When `server-stop-automatically' is set, don't count
-               ;; the daemon frame.
-	       (progn (save-some-buffers arg)
-		      (delete-frame))
-	     ;; If we're the last frame standing, kill Emacs.
-	     (save-buffers-kill-emacs arg)))
+	   ;; A `nowait' frame is flagged client-created but has a dummy
+	   ;; client and no buffer list; its lifecycle is that of any
+	   ;; other clientless frame.
+	   (server-save-buffers-kill-terminal-noclient arg))
 	  ((processp proc)
            (if (or (not stop-automatically)
                    (length> server-clients 1)
@@ -1940,6 +1935,35 @@ if there are no other active clients."
              ;; Otherwise, we want to kill Emacs.
              (save-buffers-kill-emacs arg)))
 	  (t (error "Invalid client frame")))))
+
+;;;###autoload
+(defun server-save-buffers-kill-terminal-noclient (arg)
+  "Offer to save buffers, then close the current frame or kill Emacs.
+This implements \\[save-buffers-kill-terminal] for frames not owned by a
+client process: `nowait' emacsclient frames, and -- in a daemon -- plain
+in-process frames such as those created from the macOS Dock.
+
+If other frames remain, just close this one (offering to save buffers
+first, since they would otherwise linger modified in the still-running
+Emacs and be lost on the next restart).  If this is the last frame, kill
+Emacs with `save-buffers-kill-emacs'.
+
+In a daemon the always-present initial frame is not counted, so the
+daemon normally persists; `server-stop-automatically' is honored, so a
+user who opted into automatic shutdown still gets it.  Killing the daemon
+otherwise requires an explicit `save-buffers-kill-emacs'.
+
+With ARG non-nil, silently save all file-visiting buffers."
+  (let ((stop-automatically
+         (and (daemonp)
+              (memq server-stop-automatically '(kill-terminal delete-frame)))))
+    (if (length> (frame-list) (if stop-automatically 2 1))
+        ;; Other frames remain (in a daemon the initial frame always
+        ;; does, hence the discount above): only close this one.
+        (progn (save-some-buffers arg)
+               (delete-frame))
+      ;; Last frame standing: this really does terminate Emacs.
+      (save-buffers-kill-emacs arg))))
 
 (defun server-stop-automatically--handle-delete-frame (_frame)
   "Handle deletion of FRAME when `server-stop-automatically' is `delete-frame'."

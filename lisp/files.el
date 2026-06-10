@@ -8674,11 +8674,22 @@ If the current frame has no client, kill Emacs itself using
 With prefix ARG, silently save all file-visiting buffers, then kill.
 
 If emacsclient was started with a list of file names to edit, then
-only these files will be asked to be saved."
+only these files will be asked to be saved.
+
+In a daemon, a frame with no client (for example one created in-process
+by `make-frame', or from the macOS Dock) does not kill Emacs when closed
+this way: the daemon is meant to persist.  Closing such a frame offers to
+save buffers and deletes the frame, mirroring how closing an emacsclient
+frame leaves the daemon running, and parks the daemon frameless (on
+Nextstep, reopenable from the Dock).  Killing the daemon then requires an
+explicit `save-buffers-kill-emacs' or `server-stop-automatically'."
   (interactive "P")
-  (if (frame-parameter nil 'client)
-      (server-save-buffers-kill-terminal arg)
-    (save-buffers-kill-emacs arg)))
+  (cond ((frame-parameter nil 'client)
+         (server-save-buffers-kill-terminal arg))
+        ((daemonp)
+         (server-save-buffers-kill-terminal-noclient arg))
+        (t
+         (save-buffers-kill-emacs arg))))
 
 (defun restart-emacs ()
   "Kill the current Emacs process and start a new one.
