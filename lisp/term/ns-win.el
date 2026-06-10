@@ -171,22 +171,34 @@ The properties returned may include `top', `left', `height', and `width'."
 ;; Moved here from common-win.el because they need to work in a -nw
 ;; invocation of a (featurep 'ns) => true build (Bug#74619).
 (defun ns-setup-special-keys ()
-  (setq system-key-alist
-        (list
-         ;; These are special "keys" used to pass events from C to lisp.
-         (cons  1 (make-non-key-event 'ns-power-off))
-         (cons  2 (make-non-key-event 'ns-open-file))
-         (cons  3 (make-non-key-event 'ns-open-temp-file))
-         (cons  4 (make-non-key-event 'ns-drag-file))
-         (cons  5 (make-non-key-event 'ns-drag-color))
-         (cons  6 (make-non-key-event 'ns-drag-text))
-         (cons  8 (make-non-key-event 'ns-open-file-line))
+  (let ((alist
+         (list
+          ;; These are special "keys" used to pass events from C to lisp.
+          (cons  1 (make-non-key-event 'ns-power-off))
+          (cons  2 (make-non-key-event 'ns-open-file))
+          (cons  3 (make-non-key-event 'ns-open-temp-file))
+          (cons  4 (make-non-key-event 'ns-drag-file))
+          (cons  5 (make-non-key-event 'ns-drag-color))
+          (cons  6 (make-non-key-event 'ns-drag-text))
+          (cons  8 (make-non-key-event 'ns-open-file-line))
 ;;;            (cons  9 (make-non-key-event 'ns-insert-working-text))
 ;;;            (cons 10 (make-non-key-event 'ns-delete-working-text))
-         (cons 11 (make-non-key-event 'ns-spi-service-call))
-         (cons 12 (make-non-key-event 'ns-new-frame))
-         (cons 13 (make-non-key-event 'ns-toggle-toolbar))
-         (cons 14 (make-non-key-event 'ns-show-prefs)))))
+          (cons 11 (make-non-key-event 'ns-spi-service-call))
+          (cons 12 (make-non-key-event 'ns-new-frame))
+          (cons 13 (make-non-key-event 'ns-toggle-toolbar))
+          (cons 14 (make-non-key-event 'ns-show-prefs)))))
+    (setq system-key-alist alist)
+    ;; `system-key-alist' is per-keyboard.  The setq above only covers the
+    ;; current terminal's keyboard, but these app-level Nextstep command
+    ;; events are delivered to whatever frame is selected -- which, for a
+    ;; daemon with no GUI frame, is the initial terminal.  Populate every
+    ;; live terminal's keyboard so those events still translate while
+    ;; frameless (notably ns-new-frame for the reopen gesture).
+    (dolist (terminal (terminal-list))
+      (when-let* ((frame (car (filtered-frame-list
+                               (lambda (f) (eq (frame-terminal f) terminal))))))
+        (with-selected-frame frame
+          (setq system-key-alist alist))))))
 (ns-setup-special-keys)
 
 ;; Special Nextstep-generated events are converted to function keys.  Here
@@ -197,9 +209,36 @@ The properties returned may include `top', `left', `height', and `width'."
 (define-key global-map [ns-open-temp-file] [ns-open-file])
 (define-key global-map [ns-open-file-line] 'ns-open-file-select-line)
 (define-key global-map [ns-spi-service-call] 'ns-spi-service-call)
-(define-key global-map [ns-new-frame] 'make-frame)
+;; Dispatch [ns-new-frame] as a *special event*, not an ordinary global-map
+;; key.  The Dock reopen gesture (applicationShouldHandleReopen:) queues this
+;; event, but an idle, frameless daemon's command loop will not dispatch a
+;; global-map key event until the next input arrives -- it has no focused-frame
+;; / current-keyboard context to run `read-key-sequence' against, so the first
+;; Dock click would merely queue the event and a second was needed to flush it.
+;; Special events are run by `read-char' the instant the buffer is read,
+;; regardless of focus, so the first click now creates the frame.
+(define-key special-event-map [ns-new-frame] 'ns-new-frame)
 (define-key global-map [ns-toggle-toolbar] 'ns-toggle-toolbar)
 (define-key global-map [ns-show-prefs] 'customize)
+
+(defun ns-new-frame ()
+  "Create a new frame on an NS display.
+Bound to the Nextstep \"new frame\" event, posted by the Dock menu's
+\"New Frame\" item and by the reopen gesture (clicking the Dock icon or
+`open'ing the bundle while no window is visible).
+
+Normally this is just `make-frame'.  But a daemon that has dropped its
+last GUI frame keeps running with its selected frame on the initial
+terminal, where `make-frame' cannot create a GUI frame (\"Unknown
+terminal type\").  In that case create the frame on an existing NS
+display instead, so the reopen gesture brings back a usable frame."
+  (interactive)
+  (if (eq (framep (selected-frame)) 'ns)
+      (make-frame)
+    (let ((display (car (x-display-list))))
+      (if display
+          (select-frame-set-input-focus (make-frame-on-display display))
+        (make-frame)))))
 
 
 ;; Set up a number of aliases and other layers to pretend we're using
@@ -491,6 +530,35 @@ unless the current buffer is a scratch buffer."
                  (const :tag "Always" t)
                  (other :tag "Except for scratch buffer" fresh))
   :version "23.1"
+  :group 'ns)
+
+;; Both variables below are defined in C (nsterm.m); these `defcustom's
+;; only attach Customize metadata.  `custom-declare-variable' keeps the
+;; C-initialized value (the symbol is already bound at load time), so the
+;; :value here just documents the C default.
+(defcustom ns-frameless-activation-policy 'regular
+  "Activation policy a daemon adopts after losing its last GUI frame.
+This only matters for an Emacs server/daemon on macOS: when its last NS
+frame is closed the process keeps running but, having no window, waits in
+one of two reactivatable activation policies.  `regular' keeps a live,
+clickable Dock tile (the Mail/Notes model); `accessory' hides the tile
+but stays activatable, so clicking a pinned icon or `open'ing the bundle
+can still reopen it.  The old NSApplicationActivationPolicyProhibited is
+intentionally not offered -- it cannot be reactivated.  A new frame
+restores `regular' automatically.  See also `ns-reopen-creates-frame'."
+  :type '(choice (const :tag "Keep a Dock tile (Regular)" regular)
+                 (const :tag "Hide the Dock tile (Accessory)" accessory))
+  :version "31.1"
+  :group 'ns)
+
+(defcustom ns-reopen-creates-frame t
+  "Non-nil means reopening a frameless Emacs creates a new frame.
+On macOS, clicking the Dock icon or `open'ing the bundle while Emacs has
+no visible window triggers the reopen gesture; when this is non-nil (the
+default) Emacs responds by creating a new frame, like a well-behaved
+macOS app.  Set it to nil to leave the reopen a no-op."
+  :type 'boolean
+  :version "31.1"
   :group 'ns)
 
 (declare-function ns-hide-emacs "nsfns.m" (on))

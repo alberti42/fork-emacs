@@ -5885,8 +5885,22 @@ ns_delete_terminal (struct terminal *terminal)
 
 #ifdef NS_IMPL_COCOA
   /* Rather than try to clean up the NS environment we can just
-     disable the app and leave it waiting for any new frames.  */
-  [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+     background the app and leave it waiting for any new frames.
+
+     We deliberately never use NSApplicationActivationPolicyProhibited
+     here: it is the one policy that "may not create windows or be
+     activated", so a daemon parked in it cannot be revived by clicking
+     the Dock icon or `open'ing the bundle -- the
+     applicationShouldHandleReopen: contract below could never fire.
+     `ns-frameless-activation-policy' selects between the two
+     reactivatable policies: `regular' keeps a live Dock tile (Mail /
+     Notes model), `accessory' hides the tile but is still activatable,
+     so a pinned-icon / `open' click can still reopen it.  Either way a
+     later frame creation restores Regular (nsfns.m, Fx_create_frame).  */
+  if (EQ (ns_frameless_activation_policy, Qaccessory))
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  else
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 #endif
 
   image_destroy_all_bitmaps (dpyinfo);
@@ -6748,6 +6762,25 @@ not_in_argv (NSString *arg)
 
   // ns_app_active=NO;
   ns_send_appdefined (-1);
+}
+
+/* Reopen contract: clicking a pinned Dock icon, or `open'ing the bundle
+   while the app has no visible window, delivers this.  A daemon that has
+   dropped its last GUI frame (ns_delete_terminal) is now frameless but
+   still activatable (Regular or Accessory, never Prohibited), so we can
+   honor the click by creating a fresh frame via the same newFrame: ->
+   make-frame path the Dock "New Frame" item uses.  Without this the
+   click would surface an inert, frameless app -- the defect this fix
+   targets.  Returning YES lets AppKit run its default reopen behavior
+   too (e.g. unminiaturizing an existing window when FLAG is YES).  */
+- (BOOL)applicationShouldHandleReopen: (NSApplication *)sender
+                    hasVisibleWindows: (BOOL)flag
+{
+  NSTRACE ("[EmacsApp applicationShouldHandleReopen:hasVisibleWindows:]");
+
+  if (!flag && !NILP (ns_reopen_creates_frame))
+    [self newFrame:sender];
+  return YES;
 }
 
 
@@ -11677,6 +11710,32 @@ If `none', the key is ignored by Emacs and retains its standard meaning.  */);
     doc: /* Whether to confirm application quit using dialog.  */);
   ns_confirm_quit = Qnil;
 
+  DEFVAR_LISP ("ns-frameless-activation-policy", ns_frameless_activation_policy,
+    doc: /* Activation policy a daemon adopts after losing its last GUI frame.
+This only affects an Emacs server/daemon on macOS: when its last NS
+frame is closed the process stays alive but, having no window, must pick
+a Dock/activation policy to wait in.  The value is a symbol:
+
+  `regular'   -- keep a live, clickable Dock tile (the Mail/Notes model);
+  `accessory' -- hide the Dock tile, but stay activatable so clicking a
+                 pinned icon or `open'ing the bundle can still reopen it.
+
+The previous behavior, NSApplicationActivationPolicyProhibited, is
+deliberately not offered: it cannot be reactivated, so a click on the
+icon could never bring back a frame.  When a new frame is later created
+the app returns to `regular' automatically.  See also
+`ns-reopen-creates-frame'.  */);
+  ns_frameless_activation_policy = Qregular;
+
+  DEFVAR_LISP ("ns-reopen-creates-frame", ns_reopen_creates_frame,
+    doc: /* Non-nil means reopening a frameless Emacs creates a new frame.
+On macOS, clicking the Dock icon or `open'ing the bundle while Emacs has
+no visible window triggers the reopen gesture.  When this is non-nil (the
+default) Emacs responds by creating a new frame, like a well-behaved
+macOS app (Mail, Notes).  Set it to nil to suppress that and leave the
+reopen a no-op.  */);
+  ns_reopen_creates_frame = Qt;
+
   DEFVAR_LISP ("ns-auto-hide-menu-bar", ns_auto_hide_menu_bar,
                doc: /* Non-nil means that the menu bar is hidden, but appears when the mouse is near.
 Only works on Mac OS X.  */);
@@ -11780,6 +11839,8 @@ respectively.  */);
   DEFSYM (Qreverse_italic, "reverse-italic");
   DEFSYM (Qexpanded, "expanded");
   DEFSYM (Qns_in_echo_area, "ns-in-echo-area");
+  DEFSYM (Qregular, "regular");
+  DEFSYM (Qaccessory, "accessory");
 
 #ifdef NS_IMPL_COCOA
   Fprovide (Qcocoa, Qnil);
