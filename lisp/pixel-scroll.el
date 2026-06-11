@@ -497,6 +497,26 @@ Otherwise, redisplay will reset the window's vscroll."
   (set-window-start nil (pixel-point-at-unseen-line) t)
   (set-window-vscroll nil vscroll t))
 
+(defun pixel-scroll-precision--point-margin ()
+  "Return the rows to keep between point and the window edge while scrolling.
+This is `scroll-margin' (clamped by `maximum-scroll-margin', matching the
+margin redisplay actually enforces) plus one line of slack when that margin
+is non-zero.
+
+Redisplay enforces the margin in whole screen lines, but pixel scrolling
+offsets the display by sub-line `vscroll' amounts that clip the boundary
+line.  Parking point exactly on the margin leaves only `scroll-margin' minus
+one fully visible lines plus a fraction, so as `vscroll' grows the whole-line
+count redisplay sees drops below `scroll-margin' and it recenters -- the view
+jitters near buffer edges.  The extra line keeps `scroll-margin' full lines
+visible at every `vscroll'.
+
+Returns 0 when `scroll-margin' is 0, leaving that case unchanged."
+  (let ((margin (max 0 (min scroll-margin
+                            (truncate (* (window-text-height)
+                                         maximum-scroll-margin))))))
+    (if (> margin 0) (1+ margin) 0)))
+
 ;;;###autoload
 (defun pixel-scroll-precision-scroll-down-page (delta)
   "Scroll the current window down by DELTA pixels.
@@ -523,30 +543,41 @@ equal to the text height of the current window in pixels."
     (set-window-start nil new-start-position
                       (not (zerop desired-vscroll)))
     (set-window-vscroll nil desired-vscroll t t)
-    ;; Constrain point to a location that will not result in
-    ;; recentering, if it is no longer completely visible.
-    (unless (pos-visible-in-window-p (point))
-      ;; If desired-vscroll is 0, target the window start itself.  But
-      ;; in any other case, target the line immediately below the
-      ;; window start, unless that line is itself invisible.  This
-      ;; improves the appearance of the window by maintaining the
-      ;; cursor row in a fully visible state.
-      (if (zerop desired-vscroll)
-          (goto-char new-start-position)
-        (let ((line-after (save-excursion
-                            (goto-char new-start-position)
-                            (if (zerop (vertical-motion 1))
-                                (progn
-                                  (set-window-vscroll nil 0 t t)
-                                  nil) ; nil means move to new-start-position.
-                              (point)))))
-          (if (not line-after)
-              (progn
-                (goto-char new-start-position)
-                (signal 'end-of-buffer nil))
-            (if (pos-visible-in-window-p line-after nil t)
-                (goto-char line-after)
-              (goto-char new-start-position))))))))
+    ;; Constrain point to a location that will not result in recentering.
+    ;; Keep point as many rows below the window start as
+    ;; `pixel-scroll-precision--point-margin' returns -- not merely the first
+    ;; visible line -- and trigger when point is no longer visible OR is nearer
+    ;; the top than that.  Otherwise a slow scroll with scroll-margin > 0
+    ;; leaves point too close to the top and redisplay yanks the window start
+    ;; back to restore the margin.
+    (let* ((margin (pixel-scroll-precision--point-margin))
+           (row (and (pos-visible-in-window-p (point))
+                     (cdr (posn-col-row (posn-at-point))))))
+      (when (or (null row) (< row margin))
+        ;; If desired-vscroll is 0, the window start is fully visible at the
+        ;; top; otherwise target the line `margin' rows below it, detecting
+        ;; end-of-buffer with a single line step.  Fall back to the window
+        ;; start if that boundary line is itself invisible.
+        (if (zerop desired-vscroll)
+            (progn
+              (goto-char new-start-position)
+              (when (> margin 0) (vertical-motion margin)))
+          (let ((line-after (save-excursion
+                              (goto-char new-start-position)
+                              (if (zerop (vertical-motion 1))
+                                  (progn
+                                    (set-window-vscroll nil 0 t t)
+                                    nil) ; nil means move to new-start-position.
+                                (when (> margin 1)
+                                  (vertical-motion (1- margin)))
+                                (point)))))
+            (if (not line-after)
+                (progn
+                  (goto-char new-start-position)
+                  (signal 'end-of-buffer nil))
+              (if (pos-visible-in-window-p line-after nil t)
+                  (goto-char line-after)
+                (goto-char new-start-position)))))))))
 
 (defun pixel-scroll-precision-scroll-down (delta)
   "Scroll the current window down by DELTA pixels."
@@ -586,17 +617,24 @@ the height of the current window."
                         (not (zerop delta)))
       (when (< delta 0)
         (set-window-vscroll nil (- delta) t t))
-      ;; vscroll and the window start are now set.  Move point to a
-      ;; position where redisplay will not recenter, if it is now
-      ;; outside the window.
-      (unless (pos-visible-in-window-p (point))
-        (let ((up-pos (save-excursion
-                        (goto-char point)
-                        (vertical-motion -1)
-                        (point))))
-          (if (pos-visible-in-window-p up-pos nil t)
-              (goto-char up-pos)
-            (goto-char (window-start))))))))
+      ;; vscroll and the window start are now set.  Move point to a position
+      ;; where redisplay will not recenter: keep it as many rows above the
+      ;; window bottom as `pixel-scroll-precision--point-margin' returns.
+      ;; Trigger when point is no longer visible OR is nearer the bottom than
+      ;; that, otherwise a slow scroll with scroll-margin > 0 leaves point too
+      ;; close to the bottom and redisplay yanks the window start back.
+      (let* ((margin (pixel-scroll-precision--point-margin))
+             (bottom (1- (window-text-height)))
+             (row (and (pos-visible-in-window-p (point))
+                       (cdr (posn-col-row (posn-at-point))))))
+        (when (or (null row) (> row (- bottom margin)))
+          (let ((up-pos (save-excursion
+                          (goto-char point)
+                          (vertical-motion (- (max 1 margin)))
+                          (point))))
+            (if (pos-visible-in-window-p up-pos nil t)
+                (goto-char up-pos)
+              (goto-char (window-start)))))))))
 
 (defun pixel-scroll-precision-interpolate (delta &optional old-window factor)
   "Interpolate a scroll of DELTA pixels.
