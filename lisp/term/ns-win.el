@@ -240,6 +240,39 @@ display instead, so the reopen gesture brings back a usable frame."
           (select-frame-set-input-focus (make-frame-on-display display))
         (make-frame)))))
 
+(defun ns-show-daemon-in-dock ()
+  "Give a headless Emacs daemon a macOS Dock presence without showing a window.
+A daemon started with `emacs --daemon' / `--fg-daemon' has not opened the
+Nextstep connection, so it has no Dock tile and cannot be reached by clicking
+the Dock icon or by `open'.  Calling this registers the process with the window
+server -- and hence Launch Services, giving it a Dock tile -- while leaving no
+visible window.  A subsequent Dock click is then handled by
+`applicationShouldHandleReopen:' (see `ns-reopen-creates-frame'), which opens a
+real frame.
+
+Typically called from a daemon's init file:
+
+    (when (daemonp) (ns-show-daemon-in-dock))
+
+Does nothing unless Emacs is running as a daemon."
+  (interactive)
+  (when (daemonp)
+    ;; Implementation: register by briefly creating an invisible NS frame and
+    ;; immediately deleting it.  `make-frame' runs `ns_term_init', which opens
+    ;; the NS connection and registers the process; deleting that last NS frame
+    ;; runs `ns_delete_terminal', which keeps the app in
+    ;; `ns-frameless-activation-policy' (Regular, hence a tile) rather than
+    ;; tearing it down, and the in-process display lingers -- so the
+    ;; registration persists with no frame left behind.
+    ;;
+    ;; This Elisp trick is fast and reliable, if inelegant.  It deliberately
+    ;; leaves room for a future, cleaner implementation behind this same name:
+    ;; a C primitive that sets up the NS connection + activation policy + Dock
+    ;; icon directly, without ever creating a frame ("solution B").  Until that
+    ;; exists, the frame round-trip is preferred precisely because it is fast
+    ;; and reuses existing, well-tested paths.
+    (delete-frame (make-frame '((window-system . ns) (visibility . nil))))))
+
 
 ;; Set up a number of aliases and other layers to pretend we're using
 ;; the Choi/Mitsuharu Carbon port.
