@@ -99,6 +99,36 @@
            (width-in-chars (/ (car size) char-width)))
       (should (equal width-in-chars 3)))))
 
+(ert-deftest xdisp-tests--window-text-pixel-size-backward-boundary-string ()
+  ;; bug#64252
+  "Backward `window-text-pixel-size' excludes a display string at TO.
+A before-string anchored at the TO position, or an after-string whose
+overlay ends at TO, is displayed at TO -- not within the span that ends
+at TO -- so its height must not be counted in a backward measurement
+\(FROM a cons with a negative offset)."
+  (with-temp-buffer
+    (dotimes (i 8) (insert (format "line %d\n" i)))
+    (switch-to-buffer (current-buffer))
+    (let* ((to (save-excursion (goto-char (point-min)) (forward-line 4) (point)))
+           ;; A backward span of one pixel ending at TO, with no overlay.
+           (h-plain (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                   to nil nil nil t))))
+      ;; A tall before-string anchored at TO is shown at TO, below the
+      ;; span that ends there, so it must not change the measurement.
+      (let ((ov (make-overlay to to)))
+        (overlay-put ov 'before-string "X\nY\nZ\n")
+        (should (equal (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                      to nil nil nil t))
+                       h-plain))
+        (delete-overlay ov))
+      ;; Likewise for an after-string whose overlay ends at TO.
+      (let ((ov (make-overlay to to)))
+        (overlay-put ov 'after-string "X\nY\nZ\n")
+        (should (equal (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                      to nil nil nil t))
+                       h-plain))
+        (delete-overlay ov)))))
+
 (ert-deftest xdisp-tests--find-directional-overrides-case-1 ()
   (with-temp-buffer
     (insert "\
