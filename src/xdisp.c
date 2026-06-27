@@ -11718,7 +11718,7 @@ window_text_pixel_size (Lisp_Object window, Lisp_Object from, Lisp_Object to,
   ptrdiff_t start, end, bpos;
   struct text_pos startp;
   void *itdata = NULL;
-  int c, max_x = 0, max_y = 0, x = 0, y = 0, vertical_offset = 0, doff = 0;
+  int c, max_x = 0, max_y = 0, x = 0, y = 0, vertical_offset = 0;
 
   if (NILP (from))
     {
@@ -11917,58 +11917,141 @@ window_text_pixel_size (Lisp_Object window, Lisp_Object from, Lisp_Object to,
       to_x = INT_MAX;
     }
 
-  void *it2data = NULL;
-  struct it it2;
-  SAVE_IT (it2, it, it2data);
-
-  x = move_it_to (&it, end, to_x, max_y, -1, move_op);
-
-  /* We could have a display property at END, in which case asking
-     move_it_to to stop at END will overshoot and stop at position
-     after END.  So we try again, stopping before END, and account for
-     the width of the last buffer position manually.  */
-  if (IT_CHARPOS (it) > end)
+  int top_of_end_line_y = 0;
+  if (!NILP (ignore_line_at_end))
     {
-      int end_y = it.current_y;
+      /* IGNORE_LINE_AT_END asks for the pixel height of the lines
+	 strictly above END's display line, leaving END's own line
+	 out.  It is orthogonal to how FROM is given.  The typical caller
+	 passes FROM as a cons with a negative pixel offset, placing the
+	 start above a position to measure the content above it;
+	 pixel-scroll-precision-mode uses it that way for the
+	 window-start it scrolls toward.
 
-      end--;
-      RESTORE_IT (&it, &it2, it2data);
-      x = move_it_to (&it, end, to_x, max_y, -1, move_op);
-      /* Add the width of the thing at TO, but only if we didn't
-	 overshoot it; if we did, it is already accounted for.  Also,
-	 account for the height of the thing at TO.  */
-      if (IT_CHARPOS (it) == end)
+	 Walk down from FROM one screen line at a time and stop at the
+	 top of END's display line.  These lines lie above the window and
+	 were never displayed, but we still want the pixel height the
+	 iterator would assign them, so we reuse it.current_y.  It always
+	 reports the positive distance from the window top, so the rebase
+	 done above played a trick: it redefined the y-coordinate of FROM
+	 by setting
+
+	 it.current_y = start_y = WINDOW_TAB_LINE_HEIGHT + WINDOW_HEADER_LINE_HEIGHT
+
+	 which virtually mimics the situation where FROM sits just below
+	 the window top.  The base start_y reproduces the space taken by
+	 the tab line and header line.  Notably, it.current_y always
+	 returns the y distance from the window top, including the tab
+	 line and header line.  As we descend
+	 it.current_y grows; at END's line, it.current_y minus start_y
+	 is exactly the height of the lines above END's line.  Note
+	 that the base start_y is added at FROM and subtracted at the
+	 end, so it cancels.
+
+	 The reason why we walk downward (i.e., forward direction), with
+	 the coordinate rebased at start_y, rather than moving in
+	 one step backward starting from the top of END is the same
+	 reason for which in the code above it was remarked that
+	 move_it_vertically with negative offset calls
+	 move_it_vertically_backward which is not accurate, and cannot
+	 be trusted for this purpose.  Instead, forward steps starting
+	 from FROM produce exact pixel coordinates measured with respect
+	 to start_y.
+
+	 Stopping at the top of END's line leaves END's own line out by
+	 construction: an overlay before/after-string anchored at END, or a
+	 display property there, is never reached, so nothing has to be
+	 subtracted back out.  END's display line is the first line that
+	 starts at END; if none does -- END is interior to a line, e.g. a bare
+	 newline -- use the line that contains END, so the height matches an
+	 ordinary measurement up to END.
+
+	 No width is computed here; the returned width is forced to 0, since a
+	 real maximum line width would need a second walk.  */
+      while (it.current_y < max_y)
 	{
-	  x += it.pixel_width;
-
-	  /* DTRT if ignore_line_at_end is t.  */
-	  if (!NILP (ignore_line_at_end))
+	  int prev_top = it.current_y;
+	  ptrdiff_t prev_pos = IT_CHARPOS (it);
+	  int prev_vpos = it.vpos;
+	  /* Forward move to the next line (i.e., move downward).  */
+	  move_it_to (&it, -1, -1, -1, it.vpos + 1, MOVE_TO_VPOS);
+	  if (IT_CHARPOS (it) == prev_pos && it.vpos == prev_vpos)
 	    {
-	      /* If END-1 is on the previous screen line, we need to
-                 account for the vertical dimensions of previous line.  */
-	      if (it.current_y < end_y)
-		doff = (max (it.max_ascent, it.ascent)
-			+ max (it.max_descent, it.descent));
+	      /* Defensive guard: should a step fail to advance, break
+		 instead of looping forever.  */
+	      break;
 	    }
-	  else
+	  if (IT_CHARPOS (it) == end)
 	    {
+	      /* If END is at the beginning of a line: `move_it_to'
+		 advances the iterator to the beginning of the next
+		 line, meaning that we will eventually reach END and
+		 land here.  This means that the top of this line is
+		 also the top of the END line, which will be stored in
+		 top_of_end_line_y.  Hence, we do nothing and exit the
+		 loop.  */
+	      break;
+	    }
+	  else if (IT_CHARPOS (it) > end)
+	    {
+	      /* If END is in the interior of a line: in the iteration
+		 step that reaches END's line, the condition IT_CHARPOS
+		 (it) < end is verified, meaning that it will take an
+		 additional iteration before landing here.  Hence, we
+		 are one line too far down; therefore, we move one line
+		 back.  Note: if END is on the last line of the buffer's
+		 accessible portion, it also takes an extra iteration to
+		 land here; however, in this case, prev_top =
+		 it.current_y and, therefore, taking a step-back is
+		 effectively a no-op.  */
+	      it.current_y = prev_top;
+	      break;
+	    }
+	}
+      top_of_end_line_y = it.current_y;
+      /* No width here; return a defined 0 (see above).  */
+      x = start_x = 0;
+    }
+  else
+    {
+      void *it2data = NULL;
+      struct it it2;
+      SAVE_IT (it2, it, it2data);
+
+      x = move_it_to (&it, end, to_x, max_y, -1, move_op);
+
+      /* We could have a display property at END, in which case asking
+	 move_it_to to stop at END will overshoot and stop at position
+	 after END.  So we try again, stopping before END, and account for
+	 the width of the last buffer position manually.  */
+      if (IT_CHARPOS (it) > end)
+	{
+	  end--;
+	  RESTORE_IT (&it, &it2, it2data);
+	  x = move_it_to (&it, end, to_x, max_y, -1, move_op);
+	  /* Add the width of the thing at TO, but only if we didn't
+	     overshoot it; if we did, it is already accounted for.  Also,
+	     account for the height of the thing at TO.  */
+	  if (IT_CHARPOS (it) == end)
+	    {
+	      x += it.pixel_width;
 	      it.max_ascent = max (it.max_ascent, it.ascent);
 	      it.max_descent = max (it.max_descent, it.descent);
 	    }
+	  else if (IT_CHARPOS (it) > end
+		   && it.line_wrap == TRUNCATE
+		   && it.current_x - it.first_visible_x >= it.last_visible_x)
+	    {
+	      /* If the display property at END is at the beginning of the
+		 line, and the previous line was truncated, we are at END,
+		 but it.current_y is not yet updated to reflect that.  */
+	      it.current_y += max (it.max_ascent, it.ascent)
+			      + max (it.max_descent, it.descent);
+	    }
 	}
-      else if (IT_CHARPOS (it) > end
-	       && it.line_wrap == TRUNCATE
-	       && it.current_x - it.first_visible_x >= it.last_visible_x)
-	{
-          /* If the display property at END is at the beginning of the
-             line, and the previous line was truncated, we are at END,
-             but it.current_y is not yet updated to reflect that.  */
-          it.current_y += max (it.max_ascent, it.ascent)
-                          + max (it.max_descent, it.descent);
-	}
+      else
+	bidi_unshelve_cache (it2data, true);
     }
-  else
-    bidi_unshelve_cache (it2data, true);
 
   if (!NILP (x_limit))
     {
@@ -11986,12 +12069,10 @@ window_text_pixel_size (Lisp_Object window, Lisp_Object from, Lisp_Object to,
   /* Subtract height of header-line and tab-line which was counted
      automatically by start_display.  */
   if (!NILP (ignore_line_at_end))
-    y = (it.current_y + doff
-	 - WINDOW_TAB_LINE_HEIGHT (w)
-	 - WINDOW_HEADER_LINE_HEIGHT (w));
+    y = (top_of_end_line_y - start_y);
   else
-    y = (it.current_y + it.max_ascent + it.max_descent + doff
-	 - WINDOW_TAB_LINE_HEIGHT (w) - WINDOW_HEADER_LINE_HEIGHT (w));
+    y = (it.current_y + it.max_ascent + it.max_descent
+	 - start_y);
 
   /* Don't return more than Y-LIMIT.  */
   if (y > max_y)
