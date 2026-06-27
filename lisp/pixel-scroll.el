@@ -520,11 +520,16 @@ equal to the text height of the current window in pixels."
                                  (goto-char desired-start)
                                  (beginning-of-visual-line)
                                  (point)))))
-    (set-window-start nil new-start-position
-                      (not (zerop desired-vscroll)))
+    ;; Force the window start so redisplay honors it instead of disregarding
+    ;; it and jumping the window when point would be off-screen across a
+    ;; display line taller than DELTA -- see
+    ;; `pixel-scroll-precision-scroll-up-page' (bug#64252).
+    (set-window-start nil new-start-position nil)
     (set-window-vscroll nil desired-vscroll t t)
-    ;; Constrain point to a location that will not result in
-    ;; recentering, if it is no longer completely visible.
+    ;; The forced start keeps the *window* in place, but redisplay would
+    ;; still recenter an off-screen *point* to mid-window.  Constrain point
+    ;; to a location that will not result in recentering, if it is no longer
+    ;; completely visible, so it rides the window edge instead.
     (unless (pos-visible-in-window-p (point))
       ;; If desired-vscroll is 0, target the window start itself.  But
       ;; in any other case, target the line immediately below the
@@ -580,15 +585,24 @@ the height of the current window."
                (position (nth 2 dims)))
           (setq wanted-pos position)
           (when (or (not position) (eq position start))
+            ;; At the top of the buffer: force the window start so redisplay
+            ;; honors it instead of recomputing it to keep point visible --
+            ;; which, when point sits on a display line too tall to fit at
+            ;; the buffer's start, yanks the view back down and prevents
+            ;; reaching the top (bug#64252).
+            (set-window-start nil start nil)
             (signal 'beginning-of-buffer nil))
           (setq delta (- delta height))))
-      (set-window-start nil wanted-pos
-                        (not (zerop delta)))
+      ;; Force the window start so redisplay honors it instead of
+      ;; disregarding it and jumping the window across a display line taller
+      ;; than DELTA (bug#64252).  The vscroll is preserved by PRESERVE-VSCROLL.
+      (set-window-start nil wanted-pos nil)
       (when (< delta 0)
         (set-window-vscroll nil (- delta) t t))
-      ;; vscroll and the window start are now set.  Move point to a
-      ;; position where redisplay will not recenter, if it is now
-      ;; outside the window.
+      ;; The forced start keeps the *window* in place, but redisplay would
+      ;; still recenter an off-screen *point* to mid-window.  Move point to a
+      ;; position where redisplay will not recenter, if it is now outside the
+      ;; window, so it rides the bottom edge instead.
       (unless (pos-visible-in-window-p (point))
         (let ((up-pos (save-excursion
                         (goto-char point)
