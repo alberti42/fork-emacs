@@ -213,6 +213,52 @@ opposed to a touchpad) will cause Emacs to interpolate the scroll."
   :type 'boolean
   :version "29.1")
 
+(defcustom pixel-scroll-precision-reposition-point t
+  "Whether to reposition point to honor `scroll-margin' after scrolling.
+While a scroll gesture is in progress, `pixel-scroll-precision-mode' lets the
+window move freely under point and ignores `scroll-margin', so the view is not
+recentered mid-scroll.  When this option is non-nil, point is moved back inside
+the margin once scrolling stops; only point moves -- the window is left where
+scrolling left it -- so the margin is restored without the view jumping.  When
+nil, point is left wherever scrolling placed it."
+  :type 'boolean
+  :version "32.1")
+
+(defcustom pixel-scroll-precision-hide-cursor-while-scrolling nil
+  "Whether to hide the cursor while it rests against the window edge when scrolling.
+While scrolling, point is held at the top or bottom edge of the window rather
+than at its usual `scroll-margin' distance from it.  When this option is
+non-nil, the cursor is hidden as soon as point reaches the edge and is shown
+again, at its repositioned location, once scrolling stops."
+  :type 'boolean
+  :version "32.1")
+
+(defcustom pixel-scroll-precision-settle-delay 0.18
+  "Seconds of scroll inactivity after which a scroll gesture is treated as finished.
+When this much time passes with no further scrolling, `scroll-margin' is
+restored and, if `pixel-scroll-precision-reposition-point' is non-nil, point is
+moved back inside the margin.  It must be longer than the gap between events of
+a slow continuous scroll, or the margin would be restored in the middle of one;
+but a larger value also delays how soon point settles after scrolling stops."
+  :type 'number
+  :version "32.1")
+
+(defvar pixel-scroll-precision--settle-timer nil
+  "Timer that runs `pixel-scroll-precision--settle' once scrolling stops.")
+
+(defvar pixel-scroll-precision--gesture-windows nil
+  "Windows whose `scroll-margin' is suppressed for the current scroll gesture.")
+
+(defvar-local pixel-scroll-precision--saved-margin 'unset
+  "Saved `scroll-margin' state while a scroll gesture suppresses it.
+The symbol `unset' means no gesture is active in this buffer.  Otherwise a
+cons (WAS-LOCAL . VALUE) recording how to restore `scroll-margin'.")
+
+(defvar-local pixel-scroll-precision--saved-cursor-type 'unset
+  "Saved `cursor-type' state while the cursor is hidden during scrolling.
+The symbol `unset' means the cursor is not hidden.  Otherwise a
+cons (WAS-LOCAL . VALUE) recording how to restore `cursor-type'.")
+
 (defun pixel-scroll-in-rush-p ()
   "Return non-nil if next scroll should be non-smooth.
 When scrolling request is delivered soon after the previous one,
@@ -497,6 +543,112 @@ Otherwise, redisplay will reset the window's vscroll."
   (set-window-start nil (pixel-point-at-unseen-line) t)
   (set-window-vscroll nil vscroll t))
 
+(defun pixel-scroll-precision--point-pinned-p (window margin)
+  "Return non-nil if point in WINDOW sits within MARGIN rows of a window edge."
+  (and (> margin 0)
+       (with-selected-window window
+         (let ((row (cdr (posn-col-row (posn-at-point)))))
+           (and row
+                (let ((bottom (1- (window-text-height))))
+                  (or (< row margin)
+                      (> row (- bottom margin)))))))))
+
+(defun pixel-scroll-precision--begin-gesture (&optional window)
+  "Begin or continue a scroll gesture in WINDOW (default the selected window).
+Suppress `scroll-margin' in the window's buffer so redisplay does not recenter
+the window while scrolling, optionally hide the cursor once point reaches a
+window edge, and (re)arm the timer that settles the gesture.  All paths that
+scroll funnel through here, so the settle timer is pushed forward on every
+step and only fires once scrolling -- including any momentum tail -- stops."
+  (when pixel-scroll-precision-mode
+    (let* ((window (or window (selected-window)))
+           (buffer (window-buffer window)))
+      (with-current-buffer buffer
+        (let ((orig-margin (if (consp pixel-scroll-precision--saved-margin)
+                               (cdr pixel-scroll-precision--saved-margin)
+                             scroll-margin)))
+          (when (eq pixel-scroll-precision--saved-margin 'unset)
+            (setq pixel-scroll-precision--saved-margin
+                  (cons (local-variable-p 'scroll-margin) scroll-margin))
+            (setq-local scroll-margin 0))
+          (when (and pixel-scroll-precision-hide-cursor-while-scrolling
+                     (eq pixel-scroll-precision--saved-cursor-type 'unset)
+                     (pixel-scroll-precision--point-pinned-p window orig-margin))
+            (setq pixel-scroll-precision--saved-cursor-type
+                  (cons (local-variable-p 'cursor-type) cursor-type))
+            (setq-local cursor-type nil))))
+      (unless (memq window pixel-scroll-precision--gesture-windows)
+        (push window pixel-scroll-precision--gesture-windows))
+      (when (timerp pixel-scroll-precision--settle-timer)
+        (cancel-timer pixel-scroll-precision--settle-timer))
+      (setq pixel-scroll-precision--settle-timer
+            (run-with-timer pixel-scroll-precision-settle-delay nil
+                            #'pixel-scroll-precision--settle)))))
+
+(defun pixel-scroll-precision--reposition-point (margin)
+  "Move point inward to keep at least MARGIN whole rows from the window edge.
+Measured in pixels (via `posn-at-x-y'), not screen rows, so tall display lines
+such as images are handled correctly: a row-based count treats a tall image as
+a single row and wrongly concludes point is clear of the edge while in pixels
+it is pinned against it.  Target one row beyond MARGIN: a non-zero `vscroll'
+clips the boundary line, so the extra line absorbs that fractional row.  Only
+point moves, never the window; does nothing when point is already between the
+margins, or cannot be made compliant (for example next to an image taller than
+the window, where both margin lines resolve to the same position)."
+  (let* ((win (selected-window))
+         (lh (default-line-height))
+         (h (window-body-height win t))
+         ;; One line beyond MARGIN, clamped so the two margins never cross.
+         (pad (min (* (1+ margin) lh) (max 0 (- (/ h 2) lh))))
+         (top (posn-at-x-y 0 pad win))
+         (bot (posn-at-x-y 0 (max 0 (- h pad 1)) win))
+         (top-pos (and top (posn-point top)))
+         (bot-pos (and bot (posn-point bot))))
+    (cond ((and top-pos (< (point) top-pos)) (goto-char top-pos))
+          ((and bot-pos (> (point) bot-pos)) (goto-char bot-pos)))))
+
+(defun pixel-scroll-precision--reposition-point-in-margin ()
+  "Ride point at the gesture's original `scroll-margin' in the selected window.
+`pixel-scroll-precision--begin-gesture' suppresses `scroll-margin' so redisplay
+does not recenter the window mid-gesture; this keeps point the same number of
+rows from the edge by hand, so it never scrolls off-screen -- an off-screen
+point is what makes redisplay recenter, jumping the window.  Called on every
+scroll step and again at settle, so both place point identically.  A no-op when
+`pixel-scroll-precision-reposition-point' is nil or no margin is in effect."
+  (let ((saved pixel-scroll-precision--saved-margin))
+    (when (and pixel-scroll-precision-reposition-point (consp saved))
+      (let ((margin (max 0 (min (cdr saved)
+                                (truncate (* (window-text-height)
+                                             maximum-scroll-margin))))))
+        (when (> margin 0)
+          (pixel-scroll-precision--reposition-point margin))))))
+
+(defun pixel-scroll-precision--settle ()
+  "Finish the current scroll gesture.
+For each window scrolled since the last settle: reposition point to honor
+`scroll-margin' (when `pixel-scroll-precision-reposition-point' is non-nil),
+restore `scroll-margin', and reveal the cursor if it was hidden."
+  (when (timerp pixel-scroll-precision--settle-timer)
+    (cancel-timer pixel-scroll-precision--settle-timer))
+  (setq pixel-scroll-precision--settle-timer nil)
+  (dolist (window pixel-scroll-precision--gesture-windows)
+    (when (window-live-p window)
+      (with-selected-window window
+        (let ((saved pixel-scroll-precision--saved-margin))
+          (when (consp saved)
+            (pixel-scroll-precision--reposition-point-in-margin)
+            (if (car saved)
+                (setq-local scroll-margin (cdr saved))
+              (kill-local-variable 'scroll-margin))
+            (setq pixel-scroll-precision--saved-margin 'unset)))
+        (let ((cur pixel-scroll-precision--saved-cursor-type))
+          (when (consp cur)
+            (if (car cur)
+                (setq-local cursor-type (cdr cur))
+              (kill-local-variable 'cursor-type))
+            (setq pixel-scroll-precision--saved-cursor-type 'unset))))))
+  (setq pixel-scroll-precision--gesture-windows nil))
+
 ;;;###autoload
 (defun pixel-scroll-precision-scroll-down-page (delta)
   "Scroll the current window down by DELTA pixels.
@@ -550,11 +702,15 @@ equal to the text height of the current window in pixels."
 
 (defun pixel-scroll-precision-scroll-down (delta)
   "Scroll the current window down by DELTA pixels."
+  (pixel-scroll-precision--begin-gesture)
   (let ((max-height (1- (window-text-height nil t))))
     (while (> delta max-height)
       (pixel-scroll-precision-scroll-down-page max-height)
       (setq delta (- delta max-height)))
-    (pixel-scroll-precision-scroll-down-page delta)))
+    (pixel-scroll-precision-scroll-down-page delta))
+  ;; Keep point riding the margin on every step, not just at settle, so it
+  ;; never scrolls off-screen mid-gesture and provokes a redisplay recenter.
+  (pixel-scroll-precision--reposition-point-in-margin))
 
 ;;;###autoload
 (defun pixel-scroll-precision-scroll-up-page (delta)
@@ -664,12 +820,16 @@ to `pixel-scroll-precision-interpolation-factor'."
 
 (defun pixel-scroll-precision-scroll-up (delta)
   "Scroll the current window up by DELTA pixels."
+  (pixel-scroll-precision--begin-gesture)
   (let ((max-height (window-text-height nil t)))
     (when (> max-height 0)
       (while (> delta max-height)
         (pixel-scroll-precision-scroll-up-page max-height)
         (setq delta (- delta max-height)))
-      (pixel-scroll-precision-scroll-up-page delta))))
+      (pixel-scroll-precision-scroll-up-page delta)))
+  ;; Keep point riding the margin on every step, not just at settle, so it
+  ;; never scrolls off-screen mid-gesture and provokes a redisplay recenter.
+  (pixel-scroll-precision--reposition-point-in-margin))
 
 ;; FIXME: This doesn't _always_ work when there's an image above the
 ;; current line that is taller than the window, and scrolling can
