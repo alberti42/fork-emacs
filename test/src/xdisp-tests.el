@@ -99,6 +99,35 @@
            (width-in-chars (/ (car size) char-width)))
       (should (equal width-in-chars 3)))))
 
+(ert-deftest xdisp-tests--window-text-pixel-size-backward-boundary-string ()
+  ;; bug#64252
+  "IGNORE-LINE-AT-END leaves TO's line out of the height.
+A before-string or after-string anchored at TO is drawn on TO's line.
+So with IGNORE-LINE-AT-END, a tall string at TO must not change the
+measured height."
+  (with-temp-buffer
+    (dotimes (i 8) (insert (format "line %d\n" i)))
+    (switch-to-buffer (current-buffer))
+    (let* ((to (save-excursion (goto-char (point-min)) (forward-line 4) (point)))
+           ;; Baseline: FROM one pixel above TO, no overlay.
+           (h-plain (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                   to nil nil nil t))))
+      ;; A tall before-string anchored at TO is drawn on TO's line,
+      ;; which the measurement leaves out, so it must not change the result.
+      (let ((ov (make-overlay to to)))
+        (overlay-put ov 'before-string "X\nY\nZ\n")
+        (should (equal (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                      to nil nil nil t))
+                       h-plain))
+        (delete-overlay ov))
+      ;; Likewise for an after-string whose overlay ends at TO.
+      (let ((ov (make-overlay to to)))
+        (overlay-put ov 'after-string "X\nY\nZ\n")
+        (should (equal (nth 1 (window-text-pixel-size nil (cons to -1)
+                                                      to nil nil nil t))
+                       h-plain))
+        (delete-overlay ov)))))
+
 (ert-deftest xdisp-tests--find-directional-overrides-case-1 ()
   (with-temp-buffer
     (insert "\
