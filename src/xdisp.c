@@ -11923,16 +11923,48 @@ window_text_pixel_size (Lisp_Object window, Lisp_Object from, Lisp_Object to,
 
   x = move_it_to (&it, end, to_x, max_y, -1, move_op);
 
-  /* We could have a display property at END, in which case asking
-     move_it_to to stop at END will overshoot and stop at position
-     after END.  So we try again, stopping before END, and account for
-     the width of the last buffer position manually.  */
-  if (IT_CHARPOS (it) > end)
+  /* move_it_to may have stopped past END: a `display' property at END
+     makes it overshoot.  An overlay before/after-string anchored at END
+     is the opposite case -- it does not overshoot, since move_it_to
+     stops exactly at END with the string's height already folded into
+     the span.  Either way the thing at END belongs to END's own display
+     line, not to the span ending at END, so its height must be excluded:
+     re-measure stopping before END and add the last position's width by
+     hand.
+
+     A before-string is drawn at its overlay's start and an after-string
+     at its overlay's end, so the anchor that matters is END itself; the
+     range the overlay spans does not.  An empty overlay counts too, so
+     we scan overlays rather than rely on get-char-property.  */
+  bool string_at_end = false;
+  if (IT_CHARPOS (it) == end)
+    {
+      Lisp_Object ovs = Foverlays_in (make_fixnum (max (BEGV, end - 1)),
+				      make_fixnum (min (ZV, end + 1)));
+      for (; CONSP (ovs); ovs = XCDR (ovs))
+	{
+	  Lisp_Object ov = XCAR (ovs);
+	  if ((XFIXNUM (Foverlay_start (ov)) == end
+	       && !NILP (Foverlay_get (ov, Qbefore_string)))
+	      || (XFIXNUM (Foverlay_end (ov)) == end
+		  && !NILP (Foverlay_get (ov, Qafter_string))))
+	    {
+	      string_at_end = true;
+	      break;
+	    }
+	}
+    }
+  if (IT_CHARPOS (it) > end || string_at_end)
     {
       int end_y = it.current_y;
 
       end--;
       RESTORE_IT (&it, &it2, it2data);
+      /* The restored iterator may still carry the overlay string's tall
+	 ascent and descent; clear them so the re-measured line height is
+	 that of the real previous line.  */
+      if (string_at_end)
+	it.max_ascent = it.max_descent = 0;
       x = move_it_to (&it, end, to_x, max_y, -1, move_op);
       /* Add the width of the thing at TO, but only if we didn't
 	 overshoot it; if we did, it is already accounted for.  Also,
