@@ -498,6 +498,23 @@ Otherwise, redisplay will reset the window's vscroll."
   (set-window-vscroll nil vscroll t))
 
 ;;;###autoload
+(defun pixel-scroll-precision--overlay-string-at-p (pos)
+  "Return non-nil if an overlay before/after-string is anchored at POS.
+A before-string is drawn at its overlay's start and an after-string at
+its overlay's end, so when either anchor is POS the string is drawn just
+before POS's own character.  Such a POS is not a clean window start: the
+display there begins inside the string, above POS's character, so
+`posn-at-point' is an unreliable vertical reference for it.  This mirrors
+the C-level check in `window-text-pixel-size' (bug#64252)."
+  (catch 'found
+    (dolist (ov (overlays-in (max (point-min) (1- pos))
+                             (min (point-max) (1+ pos))))
+      (when (or (and (= (overlay-start ov) pos)
+                     (overlay-get ov 'before-string))
+                (and (= (overlay-end ov) pos)
+                     (overlay-get ov 'after-string)))
+        (throw 'found t)))))
+
 (defun pixel-scroll-precision-scroll-down-page (delta)
   "Scroll the current window down by DELTA pixels.
 Note that this function doesn't work if DELTA is larger than or
@@ -520,6 +537,19 @@ equal to the text height of the current window in pixels."
                                  (goto-char desired-start)
                                  (beginning-of-visual-line)
                                  (point)))))
+    ;; If DESIRED-START is not a real line start -- an overlay
+    ;; before/after-string is anchored there, so the display begins inside
+    ;; the string, above DESIRED-START's character -- then `posn-at-point'
+    ;; (and thus DESIRED-VSCROLL) is an unreliable reference, and committing
+    ;; it would move the window start into the middle of that line and
+    ;; expose the string's leading newline as a blank row.  Keep the
+    ;; current line start and let vscroll do the within-line correction
+    ;; instead, preserving the window-start-by-lines design.
+    (when (and desired-start
+               (not (eq desired-start (window-start)))
+               (pixel-scroll-precision--overlay-string-at-p desired-start))
+      (setq new-start-position (window-start)
+            desired-vscroll (+ current-vs delta)))
     ;; Force the window start so redisplay honors it instead of disregarding
     ;; it and jumping the window when point would be off-screen across a
     ;; display line taller than DELTA -- see
