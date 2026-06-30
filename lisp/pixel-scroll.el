@@ -614,6 +614,19 @@ the height of the current window."
                (height (nth 1 dims))
                (position (nth 2 dims)))
           (setq wanted-pos position)
+          ;; If the chosen start is anchored inside an overlay
+          ;; before/after-string (e.g. a tall after-string image), it is not
+          ;; a clean line start: committing it puts window-start in the
+          ;; middle of that display line, and the next backward measurement
+          ;; from there cannot resolve a position above the line, so it
+          ;; re-measures the whole line and snaps the view back onto it
+          ;; (bug#64252).  Use the line's beginning instead; the vscroll set
+          ;; below is relative to the line top and so is unaffected.  This
+          ;; mirrors the `pixel-scroll-precision-scroll-down-page' guard.
+          (when (and position
+                     (pixel-scroll-precision--overlay-string-at-p position))
+            (setq wanted-pos (save-excursion (goto-char position)
+                                             (line-beginning-position))))
           (when (or (not position) (eq position start))
             ;; At the top of the buffer: force the window start so redisplay
             ;; honors it instead of recomputing it to keep point visible --
