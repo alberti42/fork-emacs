@@ -591,6 +591,26 @@ equal to the text height of the current window in pixels."
       (setq delta (- delta max-height)))
     (pixel-scroll-precision-scroll-down-page delta)))
 
+(defun pixel-scroll-precision--after-string-at-p (pos)
+  "Return non-nil if an overlay after-string is anchored at POS."
+  (seq-some (lambda (ov) (and (= (overlay-end ov) pos)
+                              (overlay-get ov 'after-string)))
+            (overlays-in (max (point-min) (1- pos))
+                         (min (point-max) (1+ pos)))))
+
+(defun pixel-scroll-precision--screen-line-start (position)
+  "Start of the screen line on which the text at POSITION is drawn.
+An after-string anchored at POSITION is drawn after the character
+before it, and its rows all carry POSITION, so that character's
+screen line is the one a window may begin at."
+  (save-excursion
+    (goto-char position)
+    (when (and (> position (point-min))
+               (pixel-scroll-precision--after-string-at-p position))
+      (backward-char))
+    (vertical-motion 0)
+    (point)))
+
 ;;;###autoload
 (defun pixel-scroll-precision-scroll-up-page (delta)
   "Scroll the current window up by DELTA pixels.
@@ -614,6 +634,14 @@ the height of the current window."
                (height (nth 1 dims))
                (position (nth 2 dims)))
           (setq wanted-pos position)
+          ;; POSITION may lie inside a screen line rather than at its
+          ;; start (e.g. a newline hidden by a `display' overlay, or an
+          ;; overlay-string anchor).  Commit the start of the screen
+          ;; line that contains it, as the display engine itself defines
+          ;; it, so redisplay's continuation-line normalization finds it
+          ;; at distance 0 and keeps it.
+          (when position
+            (setq wanted-pos (pixel-scroll-precision--screen-line-start position)))
           (when (or (not position) (eq position start))
             ;; At the top of the buffer: force the window start so redisplay
             ;; honors it instead of recomputing it to keep point visible --
