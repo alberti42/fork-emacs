@@ -99,6 +99,112 @@
            (width-in-chars (/ (car size) char-width)))
       (should (equal width-in-chars 3)))))
 
+(ert-deftest xdisp-tests--window-text-pixel-size-backward-boundary-string ()
+  ;; bug#64252
+  "IGNORE-LINE-AT-END leaves END's whole buffer line out of the height.
+A before-string, after-string, or `display' string or image anchored on
+that line is drawn as part of it, so however tall it is, it must not
+change the measured height of the lines above.  The measurement stops at
+the top of END's buffer line (reached by walking down to the line's
+beginning), so a string drawn at or below that top is never counted.
+
+Needs a graphical frame: a multi-line string collapses to zero rows on a
+text terminal, which would make the check vacuous."
+  (skip-unless (display-graphic-p))
+  (with-temp-buffer
+    (dotimes (i 8) (insert (format "line %d\n" i)))
+    (switch-to-buffer (current-buffer))
+    (redisplay t)
+    (let* ((to (save-excursion (goto-char (point-min)) (forward-line 4) (point)))
+           (nl (save-excursion (goto-char to) (line-end-position)))
+           (tall "boundary\nstring\nfour\nlines\n")
+           ;; Height of everything above END's buffer line: a large pixel
+           ;; offset clamps FROM to point-min.
+           (above (lambda (end)
+                    (nth 1 (window-text-pixel-size nil (cons end -1000000)
+                                                   end nil nil nil t))))
+           ;; Whole-buffer height, with END's line included: it grows when
+           ;; the string is genuinely tall (guards against a vacuous test).
+           ;; A plain (non-cons) FROM returns a (width . height) pair.
+           (full (lambda ()
+                   (cdr (window-text-pixel-size nil (point-min) (point-max)))))
+           (h-above (funcall above to))
+           (h-full  (funcall full)))
+      (should (> h-above 0))
+      ;; Overlay before-/after-strings anchored on line 4: at its start,
+      ;; and at its terminating newline (where the string stacks below).
+      (dolist (spec (list (list 'before-string to to to)
+                          (list 'after-string  to to to)
+                          (list 'after-string  nl (1+ nl) nl)))
+        (pcase-let ((`(,prop ,beg ,end ,to*) spec))
+          (let ((ov (make-overlay beg end)))
+            (overlay-put ov prop tall)
+            (redisplay t)
+            (should (> (funcall full) h-full))
+            (should (equal (funcall above to*) h-above))
+            (delete-overlay ov))))
+      ;; A `display' string on a character of line 4.  This path already
+      ;; worked before the fix; keep it as a guard that the generalization
+      ;; did not regress it.
+      (put-text-property to (1+ to) 'display tall)
+      (redisplay t)
+      (should (> (funcall full) h-full))
+      (should (equal (funcall above to) h-above))
+      (remove-text-properties to (1+ to) '(display nil))
+      ;; Same for a `display' image (an automated mirror of the
+      ;; interactive reproducer's test-003).  A tall image on line 4 is
+      ;; part of that line and excluded.
+      (when (image-type-available-p 'svg)
+        (put-text-property
+         to (1+ to) 'display
+         (create-image (concat "<svg xmlns='http://www.w3.org/2000/svg'"
+                               " width='40' height='200'>"
+                               "<rect width='100%' height='100%'"
+                               " fill='#5b9bd5'/></svg>")
+                       'svg t))
+        (redisplay t)
+        (should (> (funcall full) h-full))
+        (should (equal (funcall above to) h-above))
+        (remove-text-properties to (1+ to) '(display nil))))))
+
+(ert-deftest xdisp-tests--window-text-pixel-size-backward-boundary-wrapped ()
+  ;; bug#64252
+  "IGNORE-LINE-AT-END counts a wrapped line's rows in full when it lies
+above END, and excludes a tall string on END's own line.  pixel-scroll's
+sole caller passes `window-start' -- a buffer-line start -- so END tops
+its line; this checks a wrapped line neither loses rows above END nor
+leaks when it is END's own line."
+  (skip-unless (display-graphic-p))
+  (with-temp-buffer
+    (setq truncate-lines nil)
+    (insert "first\n")
+    (insert (make-string 2000 ?x) "\n")   ; a long line that wraps
+    (insert "third\n")
+    (switch-to-buffer (current-buffer))
+    (redisplay t)
+    (let* ((p-long (save-excursion (goto-char (point-min)) (forward-line 1) (point)))
+           (p3 (save-excursion (goto-char (point-min)) (forward-line 2) (point)))
+           (tall "boundary\nstring\nfour\nlines\n")
+           (above (lambda (end)
+                    (nth 1 (window-text-pixel-size nil (cons end -1000000)
+                                                   end nil nil nil t))))
+           (h-above-p3 (funcall above p3)))
+      ;; The wrapped line above line 3 contributes many screen rows.
+      (should (> h-above-p3 (* 3 (frame-char-height))))
+      ;; A tall before-string ON the wrapped line (above line 3) is part
+      ;; of the counted region, so the height above line 3 grows.
+      (let ((ov (make-overlay p-long p-long)))
+        (overlay-put ov 'before-string tall)
+        (redisplay t)
+        (should (> (funcall above p3) h-above-p3))
+        (delete-overlay ov))
+      ;; A tall after-string on line 3 itself (END's line) is excluded.
+      (let ((ov (make-overlay p3 p3)))
+        (overlay-put ov 'after-string tall)
+        (redisplay t)
+        (should (equal (funcall above p3) h-above-p3))
+        (delete-overlay ov)))))
+
 (ert-deftest xdisp-tests--find-directional-overrides-case-1 ()
   (with-temp-buffer
     (insert "\
