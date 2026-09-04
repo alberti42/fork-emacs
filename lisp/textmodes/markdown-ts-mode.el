@@ -886,6 +886,18 @@ OVERRIDE, START, and END are passed through to
 
 (defvar url-mail-command) ; url/url-vars.el
 
+(defun markdown-ts--unbracket-destination (url)
+  "Return URL after stripping the optional pointy-bracket wrapper `<...>'.
+Pointy brackets are in general optional, but must be used for
+destinations containing spaces; see CommonMark 0.31.2, section 6.3
+\"Links\"."
+  ;; Strip the pointy brackets only when both delimiters are present,
+  ;; while leaving a destination such as `foo>' unchanged in a legitimate
+  ;; link like `[a](foo>)'.
+  (if (and (string-prefix-p "<" url) (string-suffix-p ">" url))
+      (substring url 1 -1)
+    url))
+
 (defun markdown-ts--make-link-button (beg end url)
   "Make the region from BEG to END a clickable button for URL.
 For mailto: URIs, use `url-mail-command'.  For other schemes
@@ -900,7 +912,8 @@ list with a single `markdown-ts-link', clobbering an enclosing
 heading face."
   ;; NOTE: URI scheme and host name are case-insensitive per RFC 3986
   ;; and RFC 7230.
-  (let ((case-fold-search nil))
+  (let ((url (markdown-ts--unbracket-destination url))
+        (case-fold-search nil))
     (make-text-button beg end
                       'action (lambda (_button)
                                 (cond
@@ -1715,7 +1728,8 @@ Remote images are controlled by
                ;; with the folded display.
                (not (markdown-ts--outline-invisible-p node-start)))
       (let* ((dest (treesit-search-subtree node "\\`link_destination\\'"))
-             (url (and dest (treesit-node-text dest t)))
+             (url (and dest (markdown-ts--unbracket-destination
+                             (treesit-node-text dest t))))
              (remotep (and url (string-match-p "\\`https?://" url)))
              (displayable
               (when url
