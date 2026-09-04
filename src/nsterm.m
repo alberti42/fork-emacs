@@ -1518,7 +1518,15 @@ ns_focus_frame (struct frame *f, bool noactivate)
     {
       EmacsView *view = FRAME_NS_VIEW (f);
       block_input ();
-      [NSApp activateIgnoringOtherApps: YES];
+#if defined (NS_IMPL_COCOA) && MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+      /* activateIgnoringOtherApps: is deprecated as of macOS 14, which
+         may refuse it for an application that is not already frontmost;
+         `activate' is the cooperative replacement.  */
+      if ([NSApp respondsToSelector: @selector (activate)])
+        [NSApp activate];
+      else
+#endif
+        [NSApp activateIgnoringOtherApps: YES];
       [[view window] makeKeyAndOrderFront: view];
       unblock_input ();
     }

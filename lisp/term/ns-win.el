@@ -231,14 +231,19 @@ Normally this is just `make-frame'.  But a daemon that has dropped its
 last GUI frame keeps running with its selected frame on the initial
 terminal, where `make-frame' cannot create a GUI frame (\"Unknown
 terminal type\").  In that case create the frame on an existing NS
-display instead, so the reopen gesture brings back a usable frame."
+display instead, so the reopen gesture brings back a usable frame.
+
+The new frame is given input focus in either case.  Creating a window
+does not bring a background application forward, so a frame made from
+the reopen gesture stays invisible until it is focused."
   (interactive)
-  (if (eq (framep (selected-frame)) 'ns)
-      (make-frame)
-    (let ((display (car (x-display-list))))
-      (if display
-          (select-frame-set-input-focus (make-frame-on-display display))
-        (make-frame)))))
+  (select-frame-set-input-focus
+   (if (eq (framep (selected-frame)) 'ns)
+       (make-frame)
+     (let ((display (car (x-display-list))))
+       (if display
+           (make-frame-on-display display)
+         (make-frame))))))
 
 (defun ns-show-daemon-in-dock ()
   "Give a headless Emacs daemon a macOS Dock presence without showing a window.
