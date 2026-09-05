@@ -2994,6 +2994,14 @@ delete_frame (Lisp_Object frame, Lisp_Object force)
 	   is unsafe!  */
 	if (!EQ (force, Qnoelisp))
 	  Fdelete_terminal (tmp, NILP (force) ? Qt : force);
+
+	/* A terminal's delete hook may leave the terminal alive, waiting
+	   for new frames: `ns_delete_terminal' does, and so the keyboard
+	   below outlives its last frame.  `delete_terminal' clears the
+	   name, so a name still here means the terminal stayed, and its
+	   keyboard still has to be accounted for.  */
+	if (terminal->name)
+	  kb = terminal->kboard;
       }
     else
       kb = terminal->kboard;
@@ -3029,7 +3037,10 @@ delete_frame (Lisp_Object frame, Lisp_Object force)
 	  frame_on_same_kboard = frame1;
 
       if (NILP (frame_on_same_kboard))
-	not_single_kboard_state (kb);
+	{
+	  not_single_kboard_state (kb);
+	  kboard_lost_last_frame (kb);
+	}
     }
 
 

@@ -867,6 +867,20 @@ struct kboard_stack
 
 static struct kboard_stack *kboard_stack;
 
+/* True if any live frame uses KB, i.e. somebody can still type on it.  */
+
+static bool
+kboard_has_frame (KBOARD *kb)
+{
+  Lisp_Object tail, frame;
+
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_LIVE_P (XFRAME (frame)) && FRAME_KBOARD (XFRAME (frame)) == kb)
+      return true;
+
+  return false;
+}
+
 void
 push_kboard (struct kboard *k)
 {
@@ -887,7 +901,7 @@ pop_kboard (void)
   bool found = false;
   for (t = terminal_list; t; t = t->next_terminal)
     {
-      if (t->kboard == p->kboard)
+      if (t->kboard == p->kboard && kboard_has_frame (p->kboard))
         {
           current_kboard = p->kboard;
           found = true;
@@ -896,12 +910,59 @@ pop_kboard (void)
     }
   if (!found)
     {
-      /* The terminal we remembered has been deleted.  */
+      /* The terminal we remembered has been deleted, or its keyboard
+         has no frames left, which leaves nobody able to type on it.
+         Either way it cannot be restored: binding input to it would
+         stall every later read.  */
       current_kboard = FRAME_KBOARD (SELECTED_FRAME ());
       single_kboard = false;
     }
   kboard_stack = p->next;
   xfree (p);
+}
+
+/* KBOARD has just lost its last frame, so no input can reach it any
+   more.  Drop the single-kboard lock, so that input arriving from any
+   other keyboard is read instead of being queued for this one.
+
+   If some other keyboard has a frame a user can actually type on, bind
+   input to it and rewrite any keyboards saved on the stack, so that
+   `pop_kboard' does not restore this one.  A daemon's initial frame is
+   not such a frame: it has a keyboard but no way to type on it, so
+   binding input there stalls just as badly.  With no usable frame
+   anywhere, leave the binding alone and let `read_char' follow whatever
+   keyboard produces input next.  */
+
+void
+kboard_lost_last_frame (KBOARD *kboard)
+{
+  Lisp_Object tail, frame;
+  KBOARD *to = NULL;
+
+  if (current_kboard == kboard)
+    single_kboard = false;
+
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+
+      if (FRAME_LIVE_P (f) && !FRAME_INITIAL_P (f)
+	  && FRAME_KBOARD (f) != kboard)
+	{
+	  to = FRAME_KBOARD (f);
+	  break;
+	}
+    }
+
+  if (to == NULL)
+    return;
+
+  for (struct kboard_stack *p = kboard_stack; p; p = p->next)
+    if (p->kboard == kboard)
+      p->kboard = to;
+
+  if (current_kboard == kboard)
+    current_kboard = to;
 }
 
 /* Switch to single_kboard mode, making current_kboard the only KBOARD

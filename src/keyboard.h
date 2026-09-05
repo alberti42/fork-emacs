@@ -477,6 +477,7 @@ extern void init_raw_keybuf_count (void);
 extern KBOARD *allocate_kboard (Lisp_Object);
 extern void delete_kboard (KBOARD *);
 extern void not_single_kboard_state (KBOARD *);
+extern void kboard_lost_last_frame (KBOARD *);
 extern void push_kboard (struct kboard *);
 extern void push_frame_kboard (struct frame *);
 extern void pop_kboard (void);
